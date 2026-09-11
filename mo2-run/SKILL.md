@@ -86,7 +86,8 @@ The default MO2 launch log is `<MO2 root>/logs/mo_interface.log`.
 Keep the fresh MO2 process alive while the target uses its virtual filesystem.
 MO2's `run -e` operation normally waits for the launched process tree and performs post-run cleanup after it exits.
 
-The invoking task owns the target process. On completion:
+The invoking task owns the target process.
+On completion:
 
 1. Close the target application using its recorded identity.
 2. Wait for MO2 to finish post-run cleanup, including Root Builder cleanup, and exit.
