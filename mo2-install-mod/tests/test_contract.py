@@ -54,6 +54,22 @@ class WireTests(unittest.TestCase):
 
 
 class ClientTests(unittest.TestCase):
+    def test_json_keeps_unicode_on_a_non_utf8_output_stream(self):
+        text = 'Keep "Café & 猫"?'
+        for failure in (False, True):
+            with self.subTest(failure=failure):
+                target = Mock()
+                target.status.return_value = {"status": "needs_input", "dialog": {"text": text}}
+                if failure:
+                    target.status.side_effect = wire.Error("TEST_ERROR", text)
+                output = io.BytesIO()
+                stream = io.TextIOWrapper(output, encoding="ascii", write_through=True)
+                with patch.object(client, "Client", return_value=target), redirect_stdout(stream):
+                    code = client.main(["--instance", ".", "status"])
+                result = json.loads(output.getvalue().decode("ascii"))
+                self.assertEqual(code, 1 if failure else 2)
+                self.assertEqual(result["error"]["message"] if failure else result["dialog"]["text"], text)
+
     def test_ready_check_uses_one_live_request(self):
         target = object.__new__(client.Client)
         target.request = Mock(return_value={"status": "ready", "version": wire.VERSION})
@@ -250,6 +266,29 @@ class OperationTests(unittest.TestCase):
         self.assertEqual(result["status"], "failed")
         self.assertEqual(result["error"], job.error)
         self.assertIsNone(controller.active)
+
+    def test_message_box_still_requires_input_without_an_automatic_answer(self):
+        job = self.job()
+        controller = self.controller(job)
+        controller.native_owner = job
+        detail = {"kind": "other", "title": "Installer question", "class": "QMessageBox",
+                  "text": "Keep the package?", "informative_text": "Choose in MO2.",
+                  "buttons": ["Keep", "Stop"]}
+        controls = Mock()
+        controls.describe.return_value = detail
+        controls.cancel.return_value = False
+        with patch.object(native, "dialogs", controls):
+            controller.drive_dialog()
+            self.assertEqual(job.status, "needs_input")
+            self.assertEqual(job.snapshot(controller.session)["dialog"], detail)
+            controls.cancel.assert_not_called()
+            job.cancel_requested = True
+            controller.drive_dialog()
+        self.assertEqual(job.status, "needs_input")
+        self.assertEqual(job.dialog, dict(detail, message="Cancel this dialog in MO2."))
+        controls.accept_installer.assert_not_called()
+        controls.replace.assert_not_called()
+        self.assertIs(controller.active, job)
 
     def test_old_refresh_callback_cannot_change_new_operation(self):
         old = self.job()

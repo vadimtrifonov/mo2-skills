@@ -88,6 +88,8 @@ The client returns JSON with these exit codes:
 | 2 | `needs_input`: inspect the error or dialog; leave unfamiliar installer choices to the user. |
 | 3 | Installation is ongoing or completion is unknown. |
 
+For standard message boxes, `dialog` includes `text`, `informative_text`, and `buttons` in addition to its title and class.
+
 `complete` confirms the installed source, version, archive association, and download Installed flag after refresh.
 New mods are installed disabled; activation is separate.
 Replacement also verifies unchanged enabled state and priority.

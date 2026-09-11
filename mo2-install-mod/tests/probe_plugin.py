@@ -6,7 +6,7 @@ import tempfile
 
 import mobase
 from PyQt6.QtCore import QSettings, QTimer, Qt
-from PyQt6.QtWidgets import QApplication, QDialog, QLabel, QProgressDialog, QTreeView, QVBoxLayout
+from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QTreeView
 
 
 class Probe(mobase.IPluginInstallerSimple):
@@ -109,10 +109,12 @@ class Probe(mobase.IPluginInstallerSimple):
                 self.dialog = QProgressDialog("Test installer is waiting", "Cancel", 0, 0, self.window)
                 self.dialog.canceled.connect(self.dialog.reject)
             else:
-                self.dialog = QDialog(self.window)
+                self.dialog = QMessageBox(self.window)
                 self.dialog.setWindowTitle("Test installation pause")
-                layout = QVBoxLayout(self.dialog)
-                layout.addWidget(QLabel("A test-owned installer is waiting for release."))
+                self.dialog.setText('A test-owned installer needs a choice for "Café & Co".')
+                self.dialog.setInformativeText("Keep the package?\nNo choice is made automatically.")
+                self.dialog.addButton("Keep &waiting", QMessageBox.ButtonRole.ActionRole)
+                self.dialog.addButton("Stop &review", QMessageBox.ButtonRole.RejectRole)
             self.dialog.exec()
             self.dialog = None
             return mobase.InstallResult.CANCELED

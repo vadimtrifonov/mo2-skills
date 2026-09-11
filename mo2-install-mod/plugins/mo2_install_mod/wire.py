@@ -10,7 +10,7 @@ import re
 import tempfile
 import uuid
 
-VERSION = "1.0.3"
+VERSION = "1.0.4"
 PROTOCOL = 1
 MAX_REQUEST = 64 * 1024
 TERMINAL = {"complete", "failed", "cancelled"}

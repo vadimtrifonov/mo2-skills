@@ -157,7 +157,7 @@ def main(argv: list[str] | None = None) -> int:
                 result = client.wait(result, args.wait)
         else:
             result = client.status(args.operation)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result, indent=2))
         return {"complete": 0, "ready": 0, "failed": 1, "cancelled": 1,
                 "needs_input": 2}.get(result["status"], 3)
     except (Error, OSError, ValueError, KeyError, KeyboardInterrupt) as exc:
@@ -170,7 +170,7 @@ def main(argv: list[str] | None = None) -> int:
         result = {"status": "unknown" if unknown else "failed", "error": error}
         if isinstance(exc, Error):
             result.update(exc.context)
-        print(json.dumps(result, ensure_ascii=False, indent=2))
+        print(json.dumps(result, indent=2))
         return 3 if unknown else 1
 
 

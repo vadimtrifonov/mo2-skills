@@ -1,6 +1,6 @@
 """Controls for the MO2 2.5.2 Simple/Replace dialogs and Root Builder installer."""
 
-from PyQt6.QtWidgets import QApplication, QComboBox, QDialog, QProgressDialog, QPushButton, QWidget
+from PyQt6.QtWidgets import QApplication, QComboBox, QMessageBox, QProgressDialog, QPushButton, QWidget
 
 
 def kind(dialog: QWidget) -> str:
@@ -25,8 +25,12 @@ def modal() -> QWidget | None:
 
 
 def describe(dialog: QWidget) -> dict:
-    return {"kind": kind(dialog), "title": dialog.windowTitle(),
-            "class": dialog.metaObject().className()}
+    detail = {"kind": kind(dialog), "title": dialog.windowTitle(),
+              "class": dialog.metaObject().className()}
+    if isinstance(dialog, QMessageBox):
+        detail.update(text=dialog.text(), informative_text=dialog.informativeText(),
+                      buttons=[button.text() for button in dialog.buttons()])
+    return detail
 
 
 def accept_installer(dialog: QWidget, name: str) -> str:

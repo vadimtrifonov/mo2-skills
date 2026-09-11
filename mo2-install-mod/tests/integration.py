@@ -252,9 +252,16 @@ def exercise(root, cases):
         before = payload(root / "mods" / target["name"])
         harness.control("control", hold=True)
         paused = harness.install(target, replace=True, expected="needs_input")
+        assert dict(paused["dialog"], buttons=sorted(paused["dialog"]["buttons"])) == {
+            "kind": "other", "title": "Test installation pause", "class": "QMessageBox",
+            "text": 'A test-owned installer needs a choice for "Café & Co".',
+            "informative_text": "Keep the package?\nNo choice is made automatically.",
+            "buttons": ["Keep &waiting", "Stop &review"],
+        }, paused
         harness.install(cases[1], replace=True, expected="failed")
         cancellation = harness.cli("cancel", paused["operation"], expected="needs_input")
         assert cancellation["cancel_requested"]
+        assert all(cancellation["dialog"][key] == value for key, value in paused["dialog"].items())
         assert payload(root / "mods" / target["name"]) == before
         harness.control("release")
         deadline = time.monotonic() + 10
@@ -309,7 +316,8 @@ def exercise(root, cases):
                                       "saved_metadata_verified": True, "new_mods_disabled_verified": True,
                                       "replacement_and_cancellation_verified": True,
                                       "wrong_destination_blocked": True, "client_timeout_verified": True,
-                                      "qt_text_roundtrip_verified": True, "gui_delegation_verified": True, "exits": harness.exits})
+                                      "qt_text_roundtrip_verified": True, "message_box_diagnostics_verified": True,
+                                      "gui_delegation_verified": True, "exits": harness.exits})
     print(json.dumps(load(root / "verification.json"), indent=2))
 
 
