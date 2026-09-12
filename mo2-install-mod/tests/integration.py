@@ -43,6 +43,7 @@ from contextlib import contextmanager
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import subprocess
@@ -62,8 +63,11 @@ def save(path, value):
 
 
 def payload(directory):
+    directory = directory.resolve()
+    if sys.platform == "win32" and not str(directory).startswith("\\\\?\\"):
+        directory = Path("\\\\?\\" + str(directory))
     return {p.relative_to(directory).as_posix(): hashlib.sha256(p.read_bytes()).hexdigest()
-            for p in directory.rglob("*") if p.is_file() and p.name != "meta.ini"}
+            for p in directory.rglob("*") if p.is_file() and p.name.lower() != "meta.ini"}
 
 
 def ini(path):
@@ -94,6 +98,8 @@ class Harness:
     def __init__(self, root):
         self.root = root
         self.client = PROJECT / "plugins/mo2_install_mod/client.py"
+        # Keep MO2's native temporary extraction and the client's channel in this sandbox.
+        self.env = dict(os.environ, TEMP=str(root.resolve()), TMP=str(root.resolve()), TMPDIR=str(root.resolve()))
         self.responses = []
         self.exits = []
         self.sequence = 0
@@ -101,7 +107,7 @@ class Harness:
     def cli(self, *args, expected=None):
         started = time.perf_counter()
         process = subprocess.run([sys.executable, "-B", str(self.client), "--instance", str(self.root), *map(str, args)],
-                                 capture_output=True, text=True, encoding="utf-8", timeout=150)
+                                 capture_output=True, text=True, encoding="utf-8", timeout=150, env=self.env)
         result = json.loads(process.stdout)
         elapsed_ms = (time.perf_counter() - started) * 1000
         self.responses.append({"args": list(map(str, args)), "exit": process.returncode, "result": result,
@@ -133,7 +139,7 @@ class Harness:
                                 capture_output=True, text=True, check=True)
         if int(others.stdout.strip()):
             raise RuntimeError("An MO2 process is already running. It will not be stopped by this harness.")
-        process = subprocess.Popen([str(self.root / "ModOrganizer.exe"), "--multiple", "-p", "Test"], cwd=self.root)
+        process = subprocess.Popen([str(self.root / "ModOrganizer.exe"), "--multiple", "-p", "Test"], cwd=self.root, env=self.env)
         graceful = False
         try:
             deadline = time.monotonic() + 120
@@ -279,6 +285,20 @@ def exercise(root, cases):
         harness.install(cases[1], replace=True, expected="failed")
         harness.cli("cancel", waiting["operation"], expected="cancelled")
         assert payload(root / "mods" / target["name"]) == before
+        harness.control("control", hold=True, progress=True)
+        paused = harness.install(target, replace=True, expected="needs_input")
+        harness.control("release")
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            resumed = harness.cli("status", paused["operation"])
+            if resumed["status"] == "installing":
+                break
+            time.sleep(0.2)
+        assert resumed["status"] == "installing" and "dialog" not in resumed and "error" not in resumed, resumed
+        visible = harness.control("snapshot")["dialogs"]
+        assert any(dialog["class"] == "QProgressDialog" for dialog in visible), visible
+        harness.cli("cancel", paused["operation"], expected="cancelled")
+        assert payload(root / "mods" / target["name"]) == before
         save(root / "replaced.json", harness.control("snapshot"))
     check_metadata(root, cases)
 
@@ -317,6 +337,7 @@ def exercise(root, cases):
                                       "replacement_and_cancellation_verified": True,
                                       "wrong_destination_blocked": True, "client_timeout_verified": True,
                                       "qt_text_roundtrip_verified": True, "message_box_diagnostics_verified": True,
+                                      "dialog_resumption_verified": True,
                                       "gui_delegation_verified": True, "exits": harness.exits})
     print(json.dumps(load(root / "verification.json"), indent=2))
 

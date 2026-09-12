@@ -1,17 +1,20 @@
 # MO2 Install Mod
 
-An agent skill for installing and replacing Nexus Skyrim mods through Mod Organizer 2's Simple Installer and Root Builder.
+An agent skill for installing and replacing Nexus and custom Skyrim archives through Mod Organizer 2's Simple Installer and Root Builder.
 The agent uses a command-line client to control a plugin inside a running MO2 instance.
 
 ## Behavior and scope
 
 The agent can create a mod with an exact name or replace an existing mod.
-Replacement keeps MO2 metadata and the current profile's enabled state and priority, but removes the old package files, including local edits.
-MO2's backup preference applies; configuration customizations belong in separate override mods.
+Replacement keeps notes, categories, and the current profile's enabled state and priority, while replacing the package files, including local edits.
+MO2's backup preference applies.
+Configuration customizations to Nexus packages belong in separate override mods.
 
-The skill takes a completed Nexus archive and its MO2 download metadata.
+Nexus archives use MO2 download metadata for the selected upload.
 A helper can create missing metadata from upload information for the Skyrim Special Edition Nexus catalog, including VR uploads.
-FOMOD installers and non-Nexus packages are not supported.
+Custom archives contain a root `meta.ini` declaring a version and optional game name, and are installed directly from the supplied path.
+
+FOMOD installers are not supported.
 Unrecognized dialogs require input in MO2.
 
 Mod activation, load-order changes, and Root Builder deployment into the game directory are separate from installation.
@@ -35,7 +38,8 @@ Run unit tests from this directory:
 python -B -m unittest discover -s tests -v
 ```
 
-The [native test harness](tests/integration.py) exercises real installers in a disposable MO2 copy under user Temp, with Root Builder deployment disabled.
-Run `python -B tests/integration.py --help` for fixture requirements and invocation.
+The native harnesses for [Nexus archives](tests/integration.py) and [custom archives](tests/custom_integration.py) exercise installers in disposable MO2 copies under user Temp, with Root Builder deployment disabled.
+Run either script with `--help` for fixture requirements and invocation.
 
-Increment `VERSION` in `plugins/mo2_install_mod/wire.py` whenever deployable plugin files change, including the client; the readiness check uses it to detect an outdated installed package.
+Keep `VERSION` in `plugins/mo2_install_mod/wire.py` unchanged while iterating on the same release.
+The readiness check uses it to detect an outdated installed package.

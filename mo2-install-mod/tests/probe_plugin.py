@@ -59,6 +59,10 @@ class Probe(mobase.IPluginInstallerSimple):
                     self.control = command
                 elif action == "release" and self.dialog is not None:
                     self.dialog.reject()
+                elif action == "acknowledge_extraction_cancel":
+                    dialog = QApplication.activeModalWidget()
+                    assert isinstance(dialog, QMessageBox) and dialog.windowTitle() == "Extraction cancelled"
+                    dialog.button(QMessageBox.StandardButton.Ok).click()
                 elif action == "snapshot":
                     mods = []
                     for name in self.organizer.modList().allMods():
@@ -66,6 +70,7 @@ class Probe(mobase.IPluginInstallerSimple):
                         if mod and Path(mod.absolutePath()).resolve().is_relative_to(self.root / "mods"):
                             mods.append({"name": name, "path": mod.absolutePath(), "version": mod.version().canonicalString(),
                                          "archive": mod.installationFile(), "gameName": mod.gameName(), "modID": mod.nexusId(),
+                                         "repository": mod.repository(),
                                          "priority": self.organizer.modList().priority(name),
                                          "active": bool(int(self.organizer.modList().state(name)) & int(mobase.ModState.active))})
                     command["mods"] = mods
@@ -81,7 +86,12 @@ class Probe(mobase.IPluginInstallerSimple):
                     source = Path(command["path"]).resolve()
                     assert source.is_relative_to(self.root)
                     settings = QSettings(str(source), QSettings.Format.IniFormat)
-                    command["values"] = {key: settings.value(key) for key in settings.allKeys()}
+                    command["values"] = {key: settings.value(key) for key in command.get("keys", settings.allKeys())}
+                    if settings.contains("version"):
+                        command["canonical_version"] = mobase.VersionInfo(settings.value("version")).canonicalString()
+                elif action == "touch_metadata":
+                    mod = self.organizer.modList().getMod(command["name"])
+                    mod.setVersion(mod.version())
                 elif action == "profile":
                     self.organizer.modList().setActive(command["name"], command["active"])
                     self.organizer.modList().setPriority(command["name"], command["priority"])
@@ -104,17 +114,20 @@ class Probe(mobase.IPluginInstallerSimple):
         control, self.control = self.control, {}
         if control.get("rename"):
             name.reset(control["rename"], mobase.GuessQuality.USER)
-        if control.get("hold") or control.get("progress"):
-            if control.get("progress"):
-                self.dialog = QProgressDialog("Test installer is waiting", "Cancel", 0, 0, self.window)
-                self.dialog.canceled.connect(self.dialog.reject)
-            else:
-                self.dialog = QMessageBox(self.window)
-                self.dialog.setWindowTitle("Test installation pause")
-                self.dialog.setText('A test-owned installer needs a choice for "Café & Co".')
-                self.dialog.setInformativeText("Keep the package?\nNo choice is made automatically.")
-                self.dialog.addButton("Keep &waiting", QMessageBox.ButtonRole.ActionRole)
-                self.dialog.addButton("Stop &review", QMessageBox.ButtonRole.RejectRole)
+        if control.get("hold"):
+            self.dialog = QMessageBox(self.window)
+            self.dialog.setWindowTitle("Test installation pause")
+            self.dialog.setText('A test-owned installer needs a choice for "Café & Co".')
+            self.dialog.setInformativeText("Keep the package?\nNo choice is made automatically.")
+            self.dialog.addButton("Keep &waiting", QMessageBox.ButtonRole.ActionRole)
+            self.dialog.addButton("Stop &review", QMessageBox.ButtonRole.RejectRole)
+            self.dialog.exec()
+            self.dialog = None
+            if not control.get("progress"):
+                return mobase.InstallResult.CANCELED
+        if control.get("progress"):
+            self.dialog = QProgressDialog("Test installer is waiting", "Cancel", 0, 0, self.window)
+            self.dialog.canceled.connect(self.dialog.reject)
             self.dialog.exec()
             self.dialog = None
             return mobase.InstallResult.CANCELED

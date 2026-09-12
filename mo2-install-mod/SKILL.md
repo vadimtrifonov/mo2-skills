@@ -1,12 +1,12 @@
 ---
 name: mo2-install-mod
-description: Install and replace Nexus Skyrim mods in MO2 through Simple Installer or Root Builder.
+description: Install and replace Nexus and custom Skyrim archives in MO2 through Simple Installer or Root Builder.
 compatibility: Windows; MO2 2.5.2 with Qt 6.7.1; Python 3.12+.
 ---
 
-# Install Nexus Mods in MO2
+# Install Mods in MO2
 
-FOMOD installers are unsupported; archives containing `meta.ini` are rejected.
+FOMOD installers are unsupported.
 Run the commands below from this skill's directory.
 
 ## Instance paths
@@ -18,7 +18,12 @@ Use `$base` for the resolved base directory, `$archive` for the archive's absolu
 
 ## Archive and metadata
 
-`$archive` must be a completed Nexus ZIP, 7z, or RAR directly in the resolved Downloads directory.
+Use a completed ZIP, 7z, or RAR archive with a Simple Installer or Root Builder layout.
+
+### Nexus archives
+
+`$archive` must be directly in the resolved Downloads directory.
+Archives containing `meta.ini` are rejected in this mode.
 Reuse `<archive>.meta` from an MO2 download or earlier installation if it identifies the intended Nexus upload and file version.
 If no sidecar exists, create one with MO2 closed using the selected upload's information:
 
@@ -40,6 +45,22 @@ python -B scripts/nexus_download_meta.py $archive `
 | `--expected-size` | Optional expected archive size in bytes; a mismatch prevents sidecar creation. |
 
 Creation fails if the sidecar exists, preserving MO2's download state, including its Installed/Uninstalled flags.
+
+### Custom archives
+
+`--custom` reads package metadata from a UTF-8 `meta.ini` at the archive root:
+
+```ini
+[General]
+version=1.0.0
+gameName=SkyrimSE
+```
+
+`version` is the package's declared release version and is required.
+Optional `gameName` is MO2's game short name, matched case-insensitively; if omitted, the target instance's game is used.
+`SkyrimSE` can identify an SE package installed into Skyrim VR.
+Only these two fields are imported from the package's `meta.ini`.
+Metadata is validated before overwrite approval.
 
 ## Connect
 
@@ -70,8 +91,14 @@ Use `--replace` with the exact name of an installed mod, excluding backups and s
 python -B $client --instance $base install $archive --profile $profile --replace 'Engine Fixes VR - Part 2'
 ```
 
+For custom archives, add `--custom` to either operation:
+
+```powershell
+python -B $client --instance $base install $archive --custom --profile $profile --name 'Azurite Weathers - HDR'
+```
+
 Replacement removes the previous package's files and uses MO2's backup preference.
-Configuration customizations belong in separate, higher-priority MO2 mods; do not preserve or restore edited package files.
+Configuration customizations to Nexus packages belong in separate, higher-priority MO2 mods; do not preserve or restore edited Nexus package files.
 
 Simple Installer handles Data layouts.
 Root Builder's installer must be enabled for game-root packages: root files go under `<mods>/<name>/Root/`, while Data contents such as `Scripts/` or `SKSE/` remain outside `Root/`.
@@ -90,7 +117,9 @@ The client returns JSON with these exit codes:
 
 For standard message boxes, `dialog` includes `text`, `informative_text`, and `buttons` in addition to its title and class.
 
-`complete` confirms the installed source, version, archive association, and download Installed flag after refresh.
+`complete` confirms the installed game, version, and archive association after refresh.
+Versions use MO2's canonical formatting; for example, `1.0.0` is reported as `1.0.0.0`.
+Nexus installations also verify the upload association and download Installed flag; custom mods are recorded without Nexus identities or upload associations.
 New mods are installed disabled; activation is separate.
 Replacement also verifies unchanged enabled state and priority.
 

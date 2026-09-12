@@ -121,13 +121,14 @@ def wait_seconds(value: str) -> float:
 
 
 def parser() -> argparse.ArgumentParser:
-    root = argparse.ArgumentParser(description="Install Nexus archives through a running MO2 instance.")
+    root = argparse.ArgumentParser(description="Install Nexus and custom archives through a running MO2 instance.")
     root.add_argument("--instance", type=Path, required=True, help="MO2 base directory")
     root.add_argument("--session", help="session returned by a previous request")
     commands = root.add_subparsers(dest="command", required=True)
     install = commands.add_parser("install", help="create or replace a mod")
     install.add_argument("archive", type=Path)
     install.add_argument("--profile", required=True)
+    install.add_argument("--custom", action="store_true", help="read version and optional gameName from meta.ini inside the archive")
     target = install.add_mutually_exclusive_group(required=True)
     target.add_argument("--name", help="exact new mod name")
     target.add_argument("--replace", help="exact existing mod name")
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
         if args.command == "install":
             result = client.request("install", archive=str(args.archive.resolve()),
                                     profile=args.profile, name=args.name or args.replace,
-                                    replace=args.replace is not None)
+                                    replace=args.replace is not None, custom=args.custom)
             if args.wait:
                 result = client.wait(result, args.wait)
         elif args.command == "cancel":

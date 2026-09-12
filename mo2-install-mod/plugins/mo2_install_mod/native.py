@@ -26,6 +26,7 @@ class Installation:
     replace: bool
     source: dict
     previous: dict | None
+    custom: bool = False
     status: str = "accepted"
     installer: str | None = None
     error: dict | None = None
@@ -39,7 +40,7 @@ class Installation:
     def snapshot(self, session: str) -> dict:
         result = {"operation": self.id, "session": session, "status": self.status,
                   "archive": str(self.archive), "name": self.name, "profile": self.profile,
-                  "replace": self.replace, "installer": self.installer,
+                  "replace": self.replace, "custom": self.custom, "installer": self.installer,
                   "cancel_requested": self.cancel_requested}
         if self.error:
             result["error"] = self.error
@@ -70,7 +71,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
         return "Vadim"
 
     def description(self):
-        return "Installs Nexus archives through Simple Installer and Root Builder from a local client."
+        return "Installs Nexus and custom archives through Simple Installer and Root Builder from a local client."
 
     def version(self):
         return mobase.VersionInfo(VERSION)
@@ -187,16 +188,20 @@ class InstallMod(mobase.IPluginInstallerSimple):
             raise Error("MO2_BUSY", "Finish the current MO2 operation or dialog first.")
         if request.get("profile") != self.organizer.profileName():
             raise Error("WRONG_PROFILE", "The active MO2 profile differs from the requested profile.")
-        if type(request.get("replace")) is not bool:
-            raise Error("INVALID_REQUEST", "replace must be a boolean.")
+        custom = request.get("custom", False)
+        if type(request.get("replace")) is not bool or type(custom) is not bool:
+            raise Error("INVALID_REQUEST", "replace and custom must be booleans.")
         name = validate_name(request.get("name"))
         archive = Path(request["archive"]).resolve()
-        if (not archive.is_file() or archive.parent != Path(self.organizer.downloadsPath()).resolve()
-                or archive.suffix.lower() not in {".zip", ".7z", ".rar"}):
-            raise Error("INVALID_ARCHIVE", "Use a completed ZIP, 7z, or RAR directly in MO2's Downloads directory.")
+        if not archive.is_file() or archive.suffix.lower() not in {".zip", ".7z", ".rar"}:
+            raise Error("INVALID_ARCHIVE", "Use a completed ZIP, 7z, or RAR archive.")
+        if not custom and archive.parent != Path(self.organizer.downloadsPath()).resolve():
+            raise Error("INVALID_ARCHIVE", "Use a Nexus archive directly in MO2's Downloads directory.")
+        if request["replace"] and archive.is_relative_to((Path(self.organizer.modsPath()) / name).resolve()):
+            raise Error("INVALID_ARCHIVE", "Replacement would remove the input archive from the target mod.")
         previous = self.target(name, request["replace"])
-        source = self.source(archive)
-        job = Installation(request["id"], archive, name, request["profile"], request["replace"], source, previous)
+        source = {} if custom else self.source(archive)
+        job = Installation(request["id"], archive, name, request["profile"], request["replace"], source, previous, custom)
         self.operations[job.id] = job
         self.active = job
         QTimer.singleShot(0, lambda: self.run(job))
@@ -252,6 +257,29 @@ class InstallMod(mobase.IPluginInstallerSimple):
             raise Error("INVALID_METADATA", "Provide a supported source game, positive Nexus IDs, repository=Nexus, and selected-file version.")
         return result
 
+    def custom_source(self, entry) -> dict | None:
+        # Native extraction and cleanup use entry.path() under shared Temp.
+        # A unique mapping also prevents QSettings from reusing another archive's values.
+        if not entry.parent().move(entry, f"mo2-install-meta-{uuid.uuid4().hex}.ini"):
+            raise Error("INSTALL_FAILED", "MO2 could not prepare the archive's meta.ini for extraction.")
+        extracted = self._manager().extractFile(entry, False)
+        if not extracted:
+            # For a file entry, MO2 2.5.2 returns empty on cancellation; errors raise.
+            return None
+        data = self.ini(Path(extracted))
+        version = data.value("version", "")
+        game_name = data.value("gameName", self.organizer.managedGame().gameShortName())
+        valid_ini = data.status() == QSettings.Status.NoError
+        del data
+        parsed = mobase.VersionInfo(version) if isinstance(version, str) and version.strip() else None
+        if not valid_ini or parsed is None or not parsed.isValid() or not parsed.canonicalString():
+            raise Error("INVALID_METADATA", "The archive's meta.ini must declare a nonempty version in [General].")
+        game = self.organizer.getGame(game_name) if isinstance(game_name, str) else None
+        if game is None:
+            raise Error("INVALID_METADATA", "gameName must identify a game supported by this MO2 instance.")
+        return {"version": parsed.canonicalString(), "gameName": game.gameShortName(),
+                "modID": 0, "repository": ""}
+
     def context(self, job: Installation):
         if self.organizer.profileName() != job.profile:
             raise Error("WRONG_PROFILE", "The profile changed during installation.")
@@ -295,6 +323,39 @@ class InstallMod(mobase.IPluginInstallerSimple):
         job.status = "refreshing"
         job.dialog = None
         try:
+            callback = self.apply_custom_metadata if job.custom else self.verify
+            self.organizer.onNextRefresh(lambda: QTimer.singleShot(0, lambda: callback(job)), False)
+            self.organizer.refresh(True)
+        except Exception as exc:
+            job.error = self.problem(exc)
+            job.status = "needs_input"
+
+    def apply_custom_metadata(self, job: Installation):
+        if self.active is not job:
+            return
+        try:
+            self.context(job)
+            self.target(job.name, True)
+            # The preceding refresh saved native installed-file associations and released
+            # dirty mod interfaces. Edit the saved metadata, then reload it before observing.
+            meta = self.ini(Path(self.organizer.modsPath()) / job.name / "meta.ini")
+            for key, value in job.source.items():
+                meta.setValue("modid" if key == "modID" else key, value)
+            for key in ("newestVersion", "ignoredVersion", "nexusDescription", "nexusFileStatus", "nexusCategory",
+                        "lastNexusQuery", "lastNexusUpdate", "nexusLastModified", "endorsed", "tracked"):
+                meta.remove(key)
+            meta.remove("installedFiles")
+            meta.beginWriteArray("installedFiles", 0)
+            meta.endArray()
+            meta.sync()
+            if meta.status() != QSettings.Status.NoError:
+                raise Error("VERIFY_FAILED", "MO2 could not save the custom mod's metadata.")
+            del meta
+        except Exception as exc:
+            job.error = self.problem(exc)
+            self.finish(job, "failed")
+            return
+        try:
             self.organizer.onNextRefresh(lambda: QTimer.singleShot(0, lambda: self.verify(job)), False)
             self.organizer.refresh(True)
         except Exception as exc:
@@ -324,16 +385,30 @@ class InstallMod(mobase.IPluginInstallerSimple):
         try:
             self.context(job)
             self.target(job.name, job.replace)
+            if job.custom and job.source:
+                raise Error("INSTALLER_REQUIRED", "Custom archives must contain the mod files directly, rather than a nested installer archive.")
             unsupported = []
+            metadata = []
             def inspect(path, entry):
-                if entry.name().lower() in {"moduleconfig.xml", "meta.ini"}:
+                if entry.name().lower() == "meta.ini" and job.custom and entry.path("/").lower() == "meta.ini" and entry.isFile():
+                    metadata.append(entry)
+                elif entry.name().lower() in {"moduleconfig.xml", "meta.ini"}:
                     unsupported.append(entry.path())
                     return mobase.IFileTree.STOP
                 return mobase.IFileTree.CONTINUE
             tree.walk(inspect)
             if unsupported:
                 raise Error("INSTALLER_REQUIRED", f"This archive needs a different installation procedure: {unsupported[0]}")
-            if job.cancel_requested:
+            if job.custom:
+                if len(metadata) != 1:
+                    raise Error("MISSING_METADATA", "A custom archive must contain meta.ini at its root.")
+                source = self.custom_source(metadata[0])
+                if source is None:
+                    return mobase.InstallResult.CANCELED
+                job.source = source
+                # Package metadata is input, not a replacement for MO2's installed bookkeeping.
+                metadata[0].detach()
+            if job.cancel_requested or job.error:
                 return mobase.InstallResult.CANCELED
             # Reset the variants as well: Root Builder initially selects the first variant.
             name.reset(job.name, mobase.GuessQuality.USER)
@@ -342,17 +417,32 @@ class InstallMod(mobase.IPluginInstallerSimple):
         except Exception as exc:
             job.error = self.problem(exc)
             return mobase.InstallResult.CANCELED
-        # Observe and constrain the destination; existing installers still prepare the tree.
+        # -1 prevents filename guesses or a previous mod's Nexus ID from surviving Replace.
+        # Existing installers still prepare the payload and perform extraction.
+        if job.custom:
+            return mobase.InstallResult.NOT_ATTEMPTED, tree, job.source["version"], -1
         return mobase.InstallResult.NOT_ATTEMPTED
 
     def drive_dialog(self):
         job = self.active
-        if not job or job.native_result is not None or self.native_owner is not job:
+        if not job or (self.native_owner is not job
+                       and not (self.calling is job and job.native_result is not None)):
             return
+        # Recompute dialog waits from the current modal; retain unresolved errors.
+        job.dialog = None
+        if not job.error:
+            job.status = "installing"
         dialog = dialogs.modal()
         if dialog is None:
             return
         detail = dialogs.describe(dialog)
+        if job.native_result is not None:
+            # MO2 can show a notice after the end hook, before installMod returns.
+            # Observe it as a handoff; do not approve or cancel post-install dialogs.
+            if detail["kind"] != "progress":
+                job.status = "needs_input"
+                job.dialog = detail
+            return
         if job.cancel_requested or job.error:
             if not dialogs.cancel(dialog):
                 job.status = "needs_input"
@@ -363,8 +453,6 @@ class InstallMod(mobase.IPluginInstallerSimple):
             if detail["kind"] in {"simple", "root-builder"}:
                 self.target(job.name, job.replace)
                 job.installer = detail["kind"]
-                job.status = "installing"
-                job.dialog = None
                 dialogs.accept_installer(dialog, job.name)
             elif detail["kind"] == "replace":
                 if not job.replace or job.guessed_name is None or str(job.guessed_name) != job.name:
@@ -392,24 +480,32 @@ class InstallMod(mobase.IPluginInstallerSimple):
                       "version": mod.version().canonicalString(),
                       "installationFile": mod.installationFile(),
                       "installedFiles": self.associations(meta),
-                      "repository": meta.value("repository", ""), "category": meta.value("category", ""),
+                      "repository": mod.repository(), "category": meta.value("category", ""),
                       "nexusFileStatus": meta.value("nexusFileStatus", 0, type=int)}
             source = job.source
+            associated = Path(actual["installationFile"])
+            if not associated.is_absolute():
+                associated = Path(self.organizer.downloadsPath()) / associated
             if (actual["gameName"] != source["gameName"] or actual["modID"] != source["modID"]
                     or mod.version() != mobase.VersionInfo(source["version"])
-                    or [source["modID"], source["fileID"]] not in actual["installedFiles"]
-                    or Path(actual["installationFile"]).name != job.archive.name):
-                raise Error("VERIFY_FAILED", "Installed source, version, or archive association differs from the requested download.")
-            if meta.value("repository", "") != "Nexus":
-                raise Error("VERIFY_FAILED", "The installed repository is not Nexus.")
+                    or actual["repository"] != source["repository"]
+                    or meta.value("repository", "") != source["repository"]
+                    or path_key(associated) != path_key(job.archive)):
+                raise Error("VERIFY_FAILED", "Installed game, version, identity, or archive association differs from the requested package.")
+            if job.custom:
+                if actual["installedFiles"]:
+                    raise Error("VERIFY_FAILED", "The custom mod retained Nexus upload associations.")
+            elif [source["modID"], source["fileID"]] not in actual["installedFiles"]:
+                raise Error("VERIFY_FAILED", "The installed Nexus upload association is missing.")
             if job.previous and self.target(job.name, True) != job.previous:
                 raise Error("PROFILE_CHANGED", "Replacement changed the mod's enabled state or priority.")
             content = sorted(p.name for p in directory.iterdir() if p.name.lower() != "meta.ini")
             if not content:
                 raise Error("VERIFY_FAILED", "The installed mod contains no payload.")
-            download = self.ini(Path(str(job.archive) + ".meta"))
-            if not download.value("installed", False, type=bool) or download.value("uninstalled", False, type=bool):
-                raise Error("VERIFY_FAILED", "MO2 has not marked this download installed.")
+            if not job.custom:
+                download = self.ini(Path(str(job.archive) + ".meta"))
+                if not download.value("installed", False, type=bool) or download.value("uninstalled", False, type=bool):
+                    raise Error("VERIFY_FAILED", "MO2 has not marked this download installed.")
             job.output = {"mod_path": str(directory), "metadata": actual, "content": content}
             self.finish(job, "complete")
         except Exception as exc:
