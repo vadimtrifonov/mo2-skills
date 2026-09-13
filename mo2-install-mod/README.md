@@ -1,7 +1,6 @@
 # MO2 Install Mod
 
-An agent skill for installing and replacing Nexus and custom Skyrim archives through Mod Organizer 2's Simple Installer and Root Builder.
-The agent uses a command-line client to control a plugin inside a running MO2 instance.
+An agent skill for installing and replacing Nexus and custom Skyrim archives through Mod Organizer 2's Simple Installer, Root Builder, and FOMOD Plus.
 
 ## Behavior and scope
 
@@ -11,35 +10,37 @@ MO2's backup preference applies.
 Configuration customizations to Nexus packages belong in separate override mods.
 
 Nexus archives use MO2 download metadata for the selected upload.
-A helper can create missing metadata from upload information for the Skyrim Special Edition Nexus catalog, including VR uploads.
 Custom archives contain a root `meta.ini` declaring a version and optional game name, and are installed directly from the supplied path.
 
-FOMOD installers are not supported.
+For XML FOMOD installers, the agent can read option descriptions, make selections, and confirm installation.
+FOMOD Plus handles dependencies and remembers choices for later replacements.
+Legacy scripted FOMOD installers are not supported.
 Unrecognized dialogs require input in MO2.
 
+New mods are installed disabled.
 Mod activation, load-order changes, and Root Builder deployment into the game directory are separate from installation.
 
 ## Requirements
 
 - Windows and MO2 2.5.2 with its bundled Python support and Qt 6.7.1.
-- Python 3.12 or later for the command-line client and metadata helper.
+- [mise](https://mise.jdx.dev/) for the external client and test drivers.
 - Root Builder with its installer enabled for game-root packages (tested with 5.1.1).
+- FOMOD Plus enabled for XML FOMOD archives (tested with 1.20.0).
 
 ## Use
 
 Add this directory to your agent's skills.
-[SKILL.md](SKILL.md) contains the agent's commands and required inputs; [plugin setup](references/setup.md) covers installing or updating the MO2 plugin.
+[SKILL.md](SKILL.md) contains the agent's commands, required inputs, and plugin setup instructions.
 
 ## Development
 
 Run unit tests from this directory:
 
 ```powershell
-python -B -m unittest discover -s tests -v
+mise run test
 ```
 
-The native harnesses for [Nexus archives](tests/integration.py) and [custom archives](tests/custom_integration.py) exercise installers in disposable MO2 copies under user Temp, with Root Builder deployment disabled.
-Run either script with `--help` for fixture requirements and invocation.
+The integration tests for [Nexus archives](tests/integration.py), [custom archives](tests/custom_integration.py), and [FOMOD choices](tests/fomod_integration.py) describe their setup and invocation in `--help`.
 
 Keep `VERSION` in `plugins/mo2_install_mod/wire.py` unchanged while iterating on the same release.
 The readiness check uses it to detect an outdated installed package.

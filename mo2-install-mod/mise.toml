@@ -1,0 +1,6 @@
+[tools]
+python = "3.14"
+
+[tasks.test]
+description = "Run unit tests"
+run = "python -B -m unittest discover -s tests -v"

@@ -35,7 +35,8 @@ def create(template: Path, destination: Path, game: Path):
                     ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     shutil.copy2(PROJECT / "tests" / "probe_plugin.py", plugins / "install_test_probe.py")
     for name in ("categories.dat", "nexuscatmap.dat"):
-        shutil.copy2(template / name, destination / name)
+        if (template / name).is_file():
+            shutil.copy2(template / name, destination / name)
     for name in ("downloads", "mods", "overwrite", "profiles/Test"):
         (destination / name).mkdir(parents=True)
     (destination / "portable.txt").touch()

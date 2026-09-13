@@ -13,7 +13,7 @@ import uuid
 import mobase
 from PyQt6.QtCore import QSettings, QTimer, qVersion
 
-from . import dialogs
+from . import dialogs, fomod
 from .wire import Error, PROTOCOL, TERMINAL, VERSION, channel, identifier, path_key, read_json, validate_name, write_json
 
 
@@ -32,8 +32,10 @@ class Installation:
     error: dict | None = None
     dialog: dict | None = None
     cancel_requested: bool = False
+    responding: bool = False
     native_started: bool = False
     native_result: object = None
+    native_name: str | None = None
     guessed_name: object = None  # Borrowed only while the synchronous installMod call is on the stack.
     output: dict = field(default_factory=dict)
 
@@ -57,7 +59,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
         self.window = None
         self.active: Installation | None = None
         self.operations: dict[str, Installation] = {}
-        self.replies: dict[str, dict] = {}
+        self.replies: dict[str, dict | None] = {}
         self.pending: dict[Path, dict] = {}
         self.native_busy = False
         self.calling: Installation | None = None
@@ -71,7 +73,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
         return "Vadim"
 
     def description(self):
-        return "Installs Nexus and custom archives through Simple Installer and Root Builder from a local client."
+        return "Installs Nexus and custom archives through Simple Installer, Root Builder, and FOMOD Plus from a local client."
 
     def version(self):
         return mobase.VersionInfo(VERSION)
@@ -122,7 +124,12 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 if request_id not in self.replies:
                     try:
                         identifier(request_id)
-                        request = read_json(path)
+                        try:
+                            request = read_json(path)
+                        except OSError:
+                            # Windows can briefly deny access to a newly published file.
+                            # Nothing has been dispatched; leave it for the next tick.
+                            continue
                         if request.get("id") != request_id or request.get("protocol") != PROTOCOL:
                             raise Error("INVALID_REQUEST", "Request ID or protocol does not match.")
                         if (request.get("session") != self.session
@@ -134,7 +141,8 @@ class InstallMod(mobase.IPluginInstallerSimple):
                     except Exception as exc:
                         result = {"status": "failed", "error": self.problem(exc)}
                     self.replies[request_id] = result
-                self.publish(self.folder / "replies" / path.name, self.replies[request_id])
+                if self.replies[request_id] is not None:
+                    self.publish(self.folder / "replies" / path.name, self.replies[request_id])
                 try:
                     path.unlink(missing_ok=True)
                 except OSError:
@@ -158,7 +166,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
     def problem(exc: Exception) -> dict:
         return exc.json() if isinstance(exc, Error) else {"code": "MO2_ERROR", "message": str(exc)}
 
-    def dispatch(self, request: dict) -> dict:
+    def dispatch(self, request: dict) -> dict | None:
         command = request.get("command")
         if command == "status":
             operation = request.get("operation")
@@ -166,13 +174,37 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 job = self.operations.get(identifier(operation))
                 if job is None:
                     raise Error("UNKNOWN_OPERATION", "MO2 has not accepted this operation in this session.")
+                if request.get("group") is not None or request.get("option") is not None:
+                    if request.get("group") is not None and request.get("option") is not None:
+                        raise Error("INVALID_REQUEST", "Request a group or an option, not both.")
+                    wizard = self.waiting_wizard(job)
+                    job.dialog = wizard.snapshot()
+                    result = job.snapshot(self.session)
+                    if request.get("group") is not None:
+                        result["choices"] = wizard.choices(request["group"])
+                    else:
+                        result["choice"] = wizard.describe_option(request["option"])
+                    return result
                 return job.snapshot(self.session)
+            if request.get("group") is not None or request.get("option") is not None:
+                raise Error("INVALID_REQUEST", "FOMOD details require an operation ID.")
             if not self.organizer.isPluginEnabled(self.name()):
                 raise Error("PLUGIN_DISABLED", "Enable Install Mod in MO2's plugin settings.")
             if not self.accepting:
                 raise Error("CONTROLLER_STOPPED", "Install Mod stopped accepting installations after an internal error. Inspect MO2's log before restarting.")
             return dict(self.endpoint, status="ready", profile=self.organizer.profileName(),
                         active=self.active.snapshot(self.session) if self.active else None)
+        if command == "respond":
+            job = self.operations.get(identifier(request.get("operation")))
+            if job is None:
+                raise Error("UNKNOWN_OPERATION", "No such installation in this session.")
+            wizard = self.waiting_wizard(job)
+            wizard.validate(request)
+            job.responding = True
+            # Reserve the request before Qt callbacks can enter another event loop.
+            # Unlike install acceptance, this reply describes the applied answer.
+            QTimer.singleShot(0, lambda: self.respond(job, request))
+            return None
         if command == "cancel":
             job = self.operations.get(identifier(request.get("operation")))
             if job is None:
@@ -181,10 +213,10 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 job.cancel_requested = True
             return job.snapshot(self.session)
         if command != "install":
-            raise Error("INVALID_COMMAND", "Expected install, status, or cancel.")
+            raise Error("INVALID_COMMAND", "Expected install, status, respond, or cancel.")
         if not self.organizer.isPluginEnabled(self.name()):
             raise Error("PLUGIN_DISABLED", "Enable Install Mod in MO2's plugin settings.")
-        if not self.accepting or self.active or self.native_busy or dialogs.modal():
+        if not self.accepting or self.active or self.native_busy or dialogs.current():
             raise Error("MO2_BUSY", "Finish the current MO2 operation or dialog first.")
         if request.get("profile") != self.organizer.profileName():
             raise Error("WRONG_PROFILE", "The active MO2 profile differs from the requested profile.")
@@ -206,6 +238,40 @@ class InstallMod(mobase.IPluginInstallerSimple):
         self.active = job
         QTimer.singleShot(0, lambda: self.run(job))
         return job.snapshot(self.session)
+
+    def waiting_wizard(self, job: Installation, *, applying=False):
+        if (self.active is not job or self.native_owner is not job or job.native_result is not None
+                or job.cancel_requested or job.error or (job.responding and not applying)):
+            raise Error("NOT_WAITING", "This operation is not accepting FOMOD choices.")
+        self.context(job)
+        dialog = dialogs.current()
+        if dialog is None or dialogs.kind(dialog) != "fomod-plus":
+            raise Error("NOT_WAITING", "The owned FOMOD Plus wizard is not available. Read status.")
+        return fomod.Wizard(dialog)
+
+    def respond(self, job: Installation, request: dict):
+        problem = None
+        try:
+            wizard = self.waiting_wizard(job, applying=True)
+            self.target(job.name, job.replace)
+            wizard.respond(request, job.name)
+        except Exception as exc:
+            # Invalid answers fail this request, not the installation. Choices may have
+            # changed; the next status reads the native wizard rather than a saved plan.
+            problem = self.problem(exc)
+        finally:
+            job.responding = False
+        try:
+            self.drive_dialog()
+        except Exception as exc:
+            self.accepting = False
+            job.error = self.problem(exc)
+            job.status = "needs_input"
+            problem = problem or job.error
+        result = ({"status": "failed", "operation": job.id, "session": self.session, "error": problem}
+                  if problem else job.snapshot(self.session))
+        self.replies[request["id"]] = result
+        self.publish(self.folder / "replies" / f"{request['id']}.json", result)
 
     def target(self, name: str, replacing: bool) -> dict | None:
         mods = self.organizer.modList()
@@ -280,6 +346,19 @@ class InstallMod(mobase.IPluginInstallerSimple):
         return {"version": parsed.canonicalString(), "gameName": game.gameShortName(),
                 "modID": 0, "repository": ""}
 
+    def check_fomod_files(self, tree, config_path, prefix):
+        # Extract a copy under a unique native Temp path. Leave ModuleConfig.xml
+        # at its original archive path for FOMOD Plus, including on cancellation.
+        temporary = tree.createOrphanTree()
+        entry = temporary.copy(tree.find(config_path), f"mo2-install-config-{uuid.uuid4().hex}.xml")
+        if entry is None:
+            raise Error("INSTALL_FAILED", "MO2 could not prepare the FOMOD configuration for inspection.")
+        extracted = self._manager().extractFile(entry, False)
+        if not extracted:
+            return False
+        fomod.check_destinations(extracted, tree, prefix)
+        return True
+
     def context(self, job: Installation):
         if self.organizer.profileName() != job.profile:
             raise Error("WRONG_PROFILE", "The profile changed during installation.")
@@ -293,12 +372,14 @@ class InstallMod(mobase.IPluginInstallerSimple):
         try:
             self.context(job)
             self.target(job.name, job.replace)
-            if dialogs.modal():
+            if dialogs.current():
                 raise Error("MO2_BUSY", "A dialog opened before installation started.")
             job.status = "installing"
             self.calling = job
             installed = self.organizer.installMod(str(job.archive), job.name)
-            returned_name = installed.name() if installed is not None else None
+            # FOMOD Plus refreshes in its end hook. The returned interface can
+            # already be invalid; use the name copied during the native hook.
+            returned_name = job.native_name if installed is not None else None
             del installed
         except Exception as exc:
             job.error = self.problem(exc)
@@ -374,6 +455,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
         job, self.native_owner = self.native_owner, None
         if job is self.active and job is not None and job.native_result is None:
             job.native_result = result
+            job.native_name = newMod.name() if newMod is not None else None
 
     def isArchiveSupported(self, tree):
         return self.active is not None and self.native_owner is self.active
@@ -389,14 +471,22 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 raise Error("INSTALLER_REQUIRED", "Custom archives must contain the mod files directly, rather than a nested installer archive.")
             unsupported = []
             metadata = []
+            configs = []
             def inspect(path, entry):
                 if entry.name().lower() == "meta.ini" and job.custom and entry.path("/").lower() == "meta.ini" and entry.isFile():
                     metadata.append(entry)
-                elif entry.name().lower() in {"moduleconfig.xml", "meta.ini"}:
-                    unsupported.append(entry.path())
-                    return mobase.IFileTree.STOP
+                elif entry.name().lower() == "moduleconfig.xml" and entry.isFile():
+                    configs.append(entry.path("/"))
+                elif entry.name().lower() == "meta.ini":
+                    unsupported.append(entry.path("/"))
                 return mobase.IFileTree.CONTINUE
             tree.walk(inspect)
+            if configs and not job.custom:
+                # FOMOD source folders can contain unused authoring metadata.
+                # Reserve the mod-root metadata, not every file in those folders.
+                prefix = "/".join(configs[0].split("/")[:-2])
+                reserved = {"meta.ini", (prefix + "/meta.ini").lstrip("/").lower()}
+                unsupported = [path for path in unsupported if path.lower() in reserved]
             if unsupported:
                 raise Error("INSTALLER_REQUIRED", f"This archive needs a different installation procedure: {unsupported[0]}")
             if job.custom:
@@ -408,6 +498,21 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 job.source = source
                 # Package metadata is input, not a replacement for MO2's installed bookkeeping.
                 metadata[0].detach()
+            if configs:
+                # Match the wrapper layout accepted by FOMOD Plus before delegating;
+                # otherwise a silent Simple Installer could bypass the wizard.
+                root = tree
+                while len(root) == 1 and root[0].isDir() and root[0].name().lower() != "fomod":
+                    root = root[0]
+                expected = (root.path("/").rstrip("/") + "/fomod/moduleconfig.xml").lstrip("/").lower()
+                if len(configs) != 1 or configs[0].lower() != expected:
+                    raise Error("INSTALLER_REQUIRED", "Use one FOMOD directory at the mod root, optionally inside a single wrapper folder.")
+                if not self.organizer.isPluginEnabled("FOMOD Plus"):
+                    raise Error("INSTALLER_REQUIRED", "Enable FOMOD Plus to install XML FOMOD archives.")
+                if self.organizer.pluginSetting("FOMOD Plus", "fallback_to_legacy"):
+                    raise Error("INSTALLER_REQUIRED", "Disable FOMOD Plus's fallback_to_legacy setting before installation; Cancel must stop the installer.")
+                if not self.check_fomod_files(tree, configs[0], root.path("/")):
+                    return mobase.InstallResult.CANCELED
             if job.cancel_requested or job.error:
                 return mobase.InstallResult.CANCELED
             # Reset the variants as well: Root Builder initially selects the first variant.
@@ -432,7 +537,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
         job.dialog = None
         if not job.error:
             job.status = "installing"
-        dialog = dialogs.modal()
+        dialog = dialogs.current()
         if dialog is None:
             return
         detail = dialogs.describe(dialog)
@@ -460,6 +565,8 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 self.target(job.name, True)
                 dialogs.replace(dialog)
             elif detail["kind"] != "progress":
+                if detail["kind"] == "fomod-plus":
+                    job.installer = "fomod-plus"
                 job.status = "needs_input"
                 job.dialog = detail
         except Exception as exc:

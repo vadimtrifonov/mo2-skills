@@ -6,7 +6,7 @@ import tempfile
 
 import mobase
 from PyQt6.QtCore import QSettings, QTimer, Qt
-from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QTreeView
+from PyQt6.QtWidgets import QApplication, QMessageBox, QProgressDialog, QTreeView, QAbstractButton
 
 
 class Probe(mobase.IPluginInstallerSimple):
@@ -49,9 +49,13 @@ class Probe(mobase.IPluginInstallerSimple):
         for path in self.root.glob("test-*.json"):
             if path.name in self.seen:
                 continue
+            try:
+                text = path.read_text(encoding="utf-8")
+            except OSError:
+                continue
             self.seen.add(path.name)
             try:
-                command = json.loads(path.read_text(encoding="utf-8"))
+                command = json.loads(text)
                 action = command["command"]
                 if action == "stop":
                     QTimer.singleShot(0, self.window.close)
@@ -89,15 +93,44 @@ class Probe(mobase.IPluginInstallerSimple):
                     command["values"] = {key: settings.value(key) for key in command.get("keys", settings.allKeys())}
                     if settings.contains("version"):
                         command["canonical_version"] = mobase.VersionInfo(settings.value("version")).canonicalString()
+                elif action == "fomod_control":
+                    window, = [w for w in QApplication.topLevelWidgets() if w.isVisible() and w.metaObject().className() == "FomodInstallerWindow"]
+                    buttons = [b for b in window.findChildren(QAbstractButton) if b.isVisible()]
+                    if "focus" in command:
+                        window.activateWindow()
+                        next(b for b in buttons if b.text() == command["focus"]).setFocus()
+                    if "click" in command:
+                        next(b for b in buttons if b.text() == command["click"]).click()
+                elif action == "fomod_fallback":
+                    self.organizer.setPluginSetting("FOMOD Plus", "fallback_to_legacy", command["enabled"])
+                elif action == "acknowledge_category":
+                    box = QApplication.activeModalWidget()
+                    assert isinstance(box, QMessageBox) and box.windowTitle() == "No category found"
+                    next(b for b in box.buttons() if b.text().replace("&", "") == "Proceed").click()
+                elif action == "dependencies":
+                    plugins = self.organizer.pluginList()
+                    if "active" in command:
+                        plugins.setState(command["name"], mobase.PluginState.active if command["active"] else mobase.PluginState.inactive)
+                    command["states"] = {name: {"state": int(plugins.state(name)), "origin": plugins.origin(name),
+                                               "resolved": self.organizer.resolvePath(name)} for name in command["names"]}
+                    command["plugin_count"] = len(plugins.pluginNames())
+                    command["mod_count"] = len(self.organizer.modList().allMods())
+                elif action == "fomod_saved":
+                    mod = self.organizer.modList().getMod(command["name"])
+                    command["fomod"] = json.loads(mod.pluginSetting("FOMOD Plus", "fomod", "{}"))
                 elif action == "touch_metadata":
                     mod = self.organizer.modList().getMod(command["name"])
                     mod.setVersion(mod.version())
                 elif action == "profile":
                     self.organizer.modList().setActive(command["name"], command["active"])
-                    self.organizer.modList().setPriority(command["name"], command["priority"])
+                    if "priority" in command:
+                        self.organizer.modList().setPriority(command["name"], command["priority"])
                 elif action == "gui_install":
                     QTimer.singleShot(0, lambda c=command: self.organizer.installMod(c["archive"], c["name"]))
-                (self.root / ("reply-" + path.name)).write_text(json.dumps(command), encoding="utf-8")
+                reply = self.root / ("reply-" + path.name)
+                temporary = reply.with_suffix(".tmp")
+                temporary.write_text(json.dumps(command), encoding="utf-8")
+                temporary.replace(reply)
             except Exception as exc:
                 self.emit({"event": "probe_error", "error": str(exc)})
 

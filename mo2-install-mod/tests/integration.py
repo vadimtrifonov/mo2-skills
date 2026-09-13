@@ -2,7 +2,7 @@
 
 Run from the skill directory in PowerShell:
 
-    python -B tests/integration.py `
+    mise exec -- python -B tests/integration.py `
         --template 'C:/Path/To/MO2' `
         --workspace "$env:TEMP/mo2-install-test" `
         --game 'C:/Steam/steamapps/common/SkyrimVR' `
@@ -11,15 +11,18 @@ Run from the skill directory in PowerShell:
 The template must include MO2's Python support and Root Builder.
 --game must point to an installed Skyrim VR game.
 The workspace must be a new directory under user Temp.
-Close other MO2 sessions first; the harness refuses to launch while one is running.
+The harness uses --multiple and closes only its own process.
+It refuses to launch a second copy of the same sandbox.
 It copies the application into the workspace and disables Root Builder deployment.
+MO2 and its client use the workspace as their private Temp directory.
+No game is launched.
 
 The manifest is a JSON object with four `cases`, in this order: two Data
 packages, a root-only package, and SKSEVR.
 Each case supplies an absolute `archive` path, a target `name`, a `layout`, and
-`metadata` containing nexus_download_meta.create's keyword arguments.
-Use underscores in metadata keys, such as `mod_id` and `file_version`;
-`description` is plain text, not a file path.
+Nexus `metadata`: `game`, `mod_id`, `file_id`, `file_name`, `file_version`,
+`file_category`, `mod_name`, and `mod_category`, with optional plain-text
+`description` and `expected_size`.
 An optional `update` object has the same fields for a newer archive targeting
 the same mod name.
 
@@ -41,7 +44,7 @@ import argparse
 import configparser
 from contextlib import contextmanager
 import hashlib
-import importlib.util
+import html
 import json
 import os
 from pathlib import Path
@@ -74,6 +77,42 @@ def ini(path):
     parser = configparser.ConfigParser(interpolation=None)
     parser.read(path, encoding="utf-8-sig")
     return parser
+
+
+def ini_value(value):
+    """Encode fixture values for Qt's INI reader."""
+    if isinstance(value, bool):
+        return str(value).lower()
+    if isinstance(value, int):
+        return str(value)
+    if value.startswith("@"):
+        value = "@" + value
+    quote = value != value.strip() or any(c in value for c in '\\"\n\r\t,;')
+    value = (value.replace("\\", "\\\\").replace('"', '\\"')
+             .replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t"))
+    return '"' + value + '"' if quote else value
+
+
+def write_nexus_sidecar(archive, *, game, mod_id, file_id, file_name, file_version,
+                        file_category, mod_name, mod_category, description="", expected_size=None):
+    """Create fresh Nexus metadata for test archives."""
+    if game != "skyrimspecialedition":
+        raise ValueError("Fixture metadata must use the skyrimspecialedition catalog.")
+    if expected_size is not None and archive.stat().st_size != int(expected_size):
+        raise ValueError("Fixture archive size differs from expected_size.")
+    categories = {"MAIN": 1, "UPDATE": 2, "OPTIONAL": 3, "OLD_VERSION": 4,
+                  "MISCELLANEOUS": 5, "DELETED": 6, "ARCHIVED": 7}
+    description = description.replace("\r\n", "\n").replace("\r", "\n")
+    values = {"gameName": "SkyrimSE", "modID": int(mod_id), "fileID": int(file_id),
+              "repository": "Nexus", "name": file_name, "version": file_version,
+              "fileCategory": categories[file_category], "modName": mod_name,
+              "category": int(mod_category),
+              "description": html.escape(description).replace("\n", "<br />\n"),
+              "installed": False, "uninstalled": False}
+    sidecar = Path(str(archive) + ".meta")
+    with sidecar.open("x", encoding="utf-8", newline="\n") as stream:
+        stream.write("[General]\n" + "".join(f"{key}={ini_value(value)}\n" for key, value in values.items()))
+    return sidecar
 
 
 def check_metadata(root, cases, mods=None):
@@ -134,11 +173,13 @@ class Harness:
 
     @contextmanager
     def session(self):
+        executable = str((self.root / "ModOrganizer.exe").resolve()).replace("'", "''")
         others = subprocess.run(["powershell.exe", "-NoProfile", "-Command",
-                                 "@(Get-Process ModOrganizer -ErrorAction SilentlyContinue).Count"],
+                                 "@(Get-Process ModOrganizer -ErrorAction SilentlyContinue | "
+                                 f"Where-Object {{ $_.Path -eq '{executable}' }}).Count"],
                                 capture_output=True, text=True, check=True)
         if int(others.stdout.strip()):
-            raise RuntimeError("An MO2 process is already running. It will not be stopped by this harness.")
+            raise RuntimeError("This sandbox's MO2 is already running. It will not be stopped by this harness.")
         process = subprocess.Popen([str(self.root / "ModOrganizer.exe"), "--multiple", "-p", "Test"], cwd=self.root, env=self.env)
         graceful = False
         try:
@@ -176,13 +217,10 @@ class Harness:
 
 def prepare(args, cases):
     create(args.template, args.workspace, args.game)
-    spec = importlib.util.spec_from_file_location("nexus_download_meta", PROJECT / "scripts/nexus_download_meta.py")
-    helper = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(helper)
     for case in cases + [case["update"] for case in cases if "update" in case]:
         archive = args.workspace / "downloads" / Path(case["archive"]).name
         shutil.copy2(case["archive"], archive)
-        helper.create(archive, **case["metadata"])
+        write_nexus_sidecar(archive, **case["metadata"])
         extracted = args.workspace / "expected" / archive.name
         extracted.mkdir(parents=True)
         subprocess.run(["tar.exe", "-xf", str(archive), "-C", str(extracted)], check=True)
@@ -202,7 +240,7 @@ def prepare(args, cases):
     save(args.workspace / "cases.json", cases)
     values = {"name": 'Quoted "name", semi; & café', "modName": "@Literal mod name",
               "description": 'Line 1\nLine 2 with \\ and "quote", semi; café'}
-    (args.workspace / "text-fixture.meta").write_text("[General]\n" + "".join(f"{k}={helper.encode(v)}\n" for k, v in values.items()), encoding="utf-8")
+    (args.workspace / "text-fixture.meta").write_text("[General]\n" + "".join(f"{k}={ini_value(v)}\n" for k, v in values.items()), encoding="utf-8")
     save(args.workspace / "text-fixture.json", values)
 
 

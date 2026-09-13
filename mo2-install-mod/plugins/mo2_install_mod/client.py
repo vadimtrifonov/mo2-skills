@@ -1,4 +1,4 @@
-"""Run directly with system Python; this module does not import MO2 or Qt."""
+"""External command-line client; does not import MO2 or Qt."""
 
 from __future__ import annotations
 
@@ -56,7 +56,7 @@ class Client:
         if self.session != self.endpoint["session"] or not alive(self.endpoint["pid"]):
             raise Error("SESSION_ENDED", "This MO2 session is no longer running; an unfinished installation has an unknown outcome.",
                         operation=arguments.get("operation"), session=self.session)
-        if command == "install":
+        if command in {"install", "respond"}:
             self.check_version(self.endpoint)
         request_id = uuid.uuid4().hex
         if command == "install":
@@ -83,13 +83,14 @@ class Client:
             except OSError:
                 pass
             if "error" in result and "operation" not in result:
-                raise Error(**result["error"])
+                raise Error(**(context | result["error"]))
             return result
         raise Error("REQUEST_TIMEOUT", "MO2 did not acknowledge the request. Inspect the operation's status before retrying installation.", **context)
 
-    def status(self, operation: str | None) -> dict:
+    def status(self, operation: str | None, *, group: str | None = None, option: str | None = None) -> dict:
         self.operation = operation
-        if operation:
+        details = {key: value for key, value in (("group", group), ("option", option)) if value is not None}
+        if operation and not details:
             identifier(operation)
             try:
                 return read_json(self.folder / "results" / f"{operation}.json", 1024 * 1024)
@@ -97,7 +98,7 @@ class Client:
                 pass
             except (OSError, ValueError, Error) as exc:
                 raise Error("CONNECTION_ERROR", str(exc), operation=operation, session=self.session) from exc
-        result = self.request("status", operation=operation)
+        result = self.request("status", operation=operation, **details)
         if operation is None:
             self.check_version(result)
         return result
@@ -135,6 +136,16 @@ def parser() -> argparse.ArgumentParser:
     install.add_argument("--wait", type=wait_seconds, default=120, help="seconds to wait; zero returns after acceptance")
     status = commands.add_parser("status", help="read instance information or an installation result")
     status.add_argument("operation", nargs="?")
+    details = status.add_mutually_exclusive_group()
+    details.add_argument("--group", help="FOMOD group ID: list its current choices")
+    details.add_argument("--option", help="FOMOD option ID: read its native description")
+    respond = commands.add_parser("respond", help="answer the current FOMOD Plus step")
+    respond.add_argument("operation")
+    respond.add_argument("--view", required=True, help="view token from the current step")
+    respond.add_argument("--select", action="append", default=[], metavar="ID")
+    respond.add_argument("--deselect", action="append", default=[], metavar="ID")
+    respond.add_argument("--action", choices=("stay", "back", "next", "install"), default="stay")
+    respond.add_argument("--wait", type=wait_seconds, default=120)
     cancel = commands.add_parser("cancel", help="request cancellation of an installation")
     cancel.add_argument("operation")
     cancel.add_argument("--wait", type=wait_seconds, default=30)
@@ -152,12 +163,18 @@ def main(argv: list[str] | None = None) -> int:
                                     replace=args.replace is not None, custom=args.custom)
             if args.wait:
                 result = client.wait(result, args.wait)
+        elif args.command == "respond":
+            result = client.request("respond", operation=identifier(args.operation), view=args.view,
+                                    select=args.select, deselect=args.deselect, action=args.action)
+            if args.wait and "error" not in result:
+                result = client.wait(result, args.wait)
         elif args.command == "cancel":
             result = client.request("cancel", operation=identifier(args.operation))
             if args.wait:
                 result = client.wait(result, args.wait)
         else:
-            result = client.status(args.operation)
+            details = {key: value for key, value in (("group", args.group), ("option", args.option)) if value is not None}
+            result = client.status(args.operation, **details)
         print(json.dumps(result, indent=2))
         return {"complete": 0, "ready": 0, "failed": 1, "cancelled": 1,
                 "needs_input": 2}.get(result["status"], 3)

@@ -1,9 +1,26 @@
-# Plugin Setup
+# Setup
+
+## Command-line Python
+
+From this skill's directory, trust its mise configuration and install the selected Python:
+
+```powershell
+mise trust mise.toml
+mise install python
+```
+
+The client and test drivers use mise-managed Python; MO2 loads plugins with its own bundled Python.
+
+## Plugin configuration
 
 The plugin package belongs at `<MO2>/plugins/mo2_install_mod/`.
 
-The controller requires MO2 2.5.2, its bundled Python support, and Qt 6.7.1.
-Game-root packages need Root Builder's installer enabled (tested with 5.1.1).
+The controller requires MO2 2.5.2 with its bundled Python support and Qt 6.7.1.
+
+- Game-root packages: Root Builder with its `installer` setting enabled.
+- XML FOMOD archives: FOMOD Plus enabled with `fallback_to_legacy` set to `false`.
+
+Disabling fallback makes **Cancel** stop the installation instead of handing the archive to another installer.
 
 ## Diagnose the failed check
 
@@ -43,4 +60,9 @@ if (Test-Path -LiteralPath $destination) {
 Copy-Item -LiteralPath $source -Destination $destination -Recurse
 ```
 
-Start MO2 with the intended profile, enable **Install Mod** if necessary, and rerun `status` using this skill's bundled client.
+Start MO2 with the intended profile and enable **Install Mod** if necessary.
+Check the loaded plugin using the bundled client, with `$base` set to the instance's resolved base directory:
+
+```powershell
+mise exec -- python -B plugins/mo2_install_mod/client.py --instance $base status
+```

@@ -1,10 +1,14 @@
-"""Controls for the MO2 2.5.2 Simple/Replace dialogs and Root Builder installer."""
+"""Controls for MO2 2.5.2 installers and native Replace."""
 
 from PyQt6.QtWidgets import QApplication, QComboBox, QMessageBox, QProgressDialog, QPushButton, QWidget
+
+from . import fomod
 
 
 def kind(dialog: QWidget) -> str:
     name = dialog.metaObject().className()
+    if name == "FomodInstallerWindow":
+        return "fomod-plus"
     if name == "SimpleInstallDialog" and dialog.findChild(QComboBox, "nameCombo"):
         return "simple"
     if name == "QueryOverwriteDialog" and dialog.findChild(QPushButton, "replaceBtn"):
@@ -19,12 +23,15 @@ def kind(dialog: QWidget) -> str:
     return "other"
 
 
-def modal() -> QWidget | None:
+def current() -> QWidget | None:
     window = QApplication.activeModalWidget()
-    return window if window is not None and window.isVisible() else None
+    # A native notice takes precedence over the non-modal FOMOD Plus wizard.
+    return window if window is not None and window.isVisible() else fomod.window()
 
 
 def describe(dialog: QWidget) -> dict:
+    if kind(dialog) == "fomod-plus":
+        return fomod.Wizard(dialog).snapshot()
     detail = {"kind": kind(dialog), "title": dialog.windowTitle(),
               "class": dialog.metaObject().className()}
     if isinstance(dialog, QMessageBox):
@@ -56,6 +63,9 @@ def replace(dialog: QWidget) -> None:
 
 
 def cancel(dialog: QWidget) -> bool:
+    if kind(dialog) == "fomod-plus":
+        fomod.cancel(dialog)
+        return True
     if kind(dialog) in {"simple", "root-builder", "replace"}:
         dialog.findChild(QPushButton, "cancelBtn").click()
         return True

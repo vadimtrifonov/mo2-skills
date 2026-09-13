@@ -2,13 +2,18 @@
 
 Run from the skill directory in PowerShell:
 
-    python -B tests/custom_integration.py `
+    mise exec -- python -B tests/custom_integration.py `
         --template 'C:/Path/To/MO2' `
         --workspace "$env:TEMP/mo2-custom-test" `
         --game 'C:/Steam/steamapps/common/SkyrimVR' `
         --cases 'C:/Fixtures/custom-cases.json'
 
-Use the same template, game, and fresh Temp workspace requirements as integration.py.
+The template must include MO2's Python support and Root Builder.
+--game must point to an installed Skyrim VR game; --workspace must be a new
+directory under user Temp. The harness copies the application there, uses a
+private Temp directory, disables Root Builder deployment, and closes only its
+own MO2 process. No game is launched.
+
 The manifest contains `cases`, each with an absolute `archive`, exact `name`, and
 `layout` (`data`, `root`, or `prepared-root`). `root` payloads need a Root/ prefix;
 `prepared-root` payloads already contain Root/ alongside any Data folders.
@@ -18,8 +23,7 @@ replace installed mods, and check saved and live metadata after reopening MO2.
 Additional generated fixtures exercise metadata errors, Downloads placement,
 sidecar conflicts, filename collisions, cancellation, and backup preferences.
 The solid-archive cancellation fixture temporarily uses 4 GiB of disk space during
-preparation; only the compressed archive is retained. MO2 and its client use the
-workspace as their private Temp directory.
+preparation; only the compressed archive is retained.
 """
 
 from __future__ import annotations
