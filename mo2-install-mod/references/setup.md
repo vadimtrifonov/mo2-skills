@@ -15,7 +15,7 @@ The client and test drivers use mise-managed Python; MO2 loads plugins with its 
 
 The plugin package belongs at `<MO2>/plugins/mo2_install_mod/`.
 
-The controller requires MO2 2.5.2 with its bundled Python support and Qt 6.7.1.
+The controller requires MO2 2.5.2 or 2.5.3 with its bundled Python support.
 
 - Game-root packages: Root Builder with its `installer` setting enabled.
 - XML FOMOD archives: FOMOD Plus enabled with `fallback_to_legacy` set to `false`.

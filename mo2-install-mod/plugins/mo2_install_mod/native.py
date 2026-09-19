@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import configparser
 from dataclasses import dataclass, field
 import logging
 import os
 from pathlib import Path
+import re
 import sys
 import time
 import uuid
@@ -37,6 +39,7 @@ class Installation:
     native_result: object = None
     native_name: str | None = None
     guessed_name: object = None  # Borrowed only while the synchronous installMod call is on the stack.
+    metadata_deadline: float = 0.0
     output: dict = field(default_factory=dict)
 
     def snapshot(self, session: str) -> dict:
@@ -89,8 +92,10 @@ class InstallMod(mobase.IPluginInstallerSimple):
 
     def init(self, organizer):
         self.organizer = organizer
-        if organizer.appVersion() != mobase.VersionInfo("2.5.2") or qVersion() != "6.7.1":
-            logging.error("Install Mod requires MO2 2.5.2 / Qt 6.7.1.")
+        self.mo2_version = (str(organizer.version()) if hasattr(organizer, "version")
+                            else organizer.appVersion().canonicalString())
+        if not re.match(r"^2\.5\.[23](?:\D|$)", self.mo2_version):
+            logging.error(f"Install Mod requires MO2 2.5.2 or 2.5.3; found {self.mo2_version}.")
             return False
         organizer.onUserInterfaceInitialized(self.ready)
         return True
@@ -104,7 +109,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
             (self.folder / name).mkdir(parents=True, exist_ok=True)
         self.endpoint = {"protocol": PROTOCOL, "version": VERSION, "pid": os.getpid(),
                          "session": self.session, "instance": self.organizer.basePath(),
-                         "mo2_version": self.organizer.appVersion().canonicalString(),
+                         "mo2_version": self.mo2_version,
                          "qt_version": qVersion(), "python_version": sys.version.split()[0],
                          "downloads": self.organizer.downloadsPath(), "mods": self.organizer.modsPath()}
         write_json(self.root / "endpoint.json", self.endpoint)
@@ -401,15 +406,55 @@ class InstallMod(mobase.IPluginInstallerSimple):
                 job.error = {"code": "INSTALL_FAILED", "message": "MO2 did not return the requested installed mod."}
                 self.finish(job, "failed")
             return
-        job.status = "refreshing"
         job.dialog = None
+        if job.custom:
+            self.refresh(job, self.apply_custom_metadata)
+            return
+        job.status = "verifying"
+        job.metadata_deadline = time.monotonic() + 30
         try:
-            callback = self.apply_custom_metadata if job.custom else self.verify
+            self.organizer.onNextRefresh(lambda: QTimer.singleShot(0, lambda: self.wait_for_metadata(job)), True)
+        except Exception as exc:
+            job.error = self.problem(exc)
+            job.status = "needs_input"
+
+    def refresh(self, job: Installation, callback):
+        job.status = "refreshing"
+        try:
             self.organizer.onNextRefresh(lambda: QTimer.singleShot(0, lambda: callback(job)), False)
             self.organizer.refresh(True)
         except Exception as exc:
             job.error = self.problem(exc)
             job.status = "needs_input"
+
+    def wait_for_metadata(self, job: Installation):
+        if self.active is not job:
+            return
+        try:
+            self.context(job)
+            # QSettings can flush MO2's unfinished save through its shared cache.
+            meta = configparser.ConfigParser(interpolation=None, delimiters=("=",))
+            meta.optionxform = str
+            with (Path(self.organizer.modsPath()) / job.name / "meta.ini").open(encoding="utf-8-sig") as stream:
+                meta.read_file(stream)
+            saved = any(
+                meta.getint("installedFiles", f"{index}\\modid", fallback=0) == job.source["modID"]
+                and meta.getint("installedFiles", f"{index}\\fileid", fallback=0) == job.source["fileID"]
+                for index in range(1, meta.getint("installedFiles", "size", fallback=0) + 1))
+            if not saved:
+                if time.monotonic() < job.metadata_deadline:
+                    QTimer.singleShot(100, lambda: self.wait_for_metadata(job))
+                    return
+                raise Error("VERIFY_FAILED", "MO2 did not save the installed Nexus upload association within 30 seconds.")
+        except Exception as exc:
+            if isinstance(exc, (OSError, configparser.Error, ValueError)):
+                exc = Error("VERIFY_FAILED", f"Could not read saved mod metadata: {exc}")
+            job.error = self.problem(exc)
+            self.finish(job, "failed")
+            return
+        # Reload only after the upload IDs are saved. FOMOD Plus can leave a stale
+        # mod object through its own end-hook refresh, so verification still needs a reload.
+        self.refresh(job, self.verify)
 
     def apply_custom_metadata(self, job: Installation):
         if self.active is not job:
@@ -436,12 +481,7 @@ class InstallMod(mobase.IPluginInstallerSimple):
             job.error = self.problem(exc)
             self.finish(job, "failed")
             return
-        try:
-            self.organizer.onNextRefresh(lambda: QTimer.singleShot(0, lambda: self.verify(job)), False)
-            self.organizer.refresh(True)
-        except Exception as exc:
-            job.error = self.problem(exc)
-            job.status = "needs_input"
+        self.refresh(job, self.verify)
 
     def onInstallationStart(self, archive, reinstallation, currentMod):
         self.native_busy = True
@@ -580,9 +620,12 @@ class InstallMod(mobase.IPluginInstallerSimple):
             self.context(job)
             mod = self.organizer.modList().getMod(job.name)
             if mod is None:
-                raise Error("VERIFY_FAILED", "The installed mod is missing after refresh.")
+                raise Error("VERIFY_FAILED", "The installed mod is missing from MO2.")
             directory = Path(mod.absolutePath())
             meta = self.ini(directory / "meta.ini")
+            meta.sync()
+            if meta.status() != QSettings.Status.NoError:
+                raise Error("VERIFY_FAILED", "MO2 could not synchronize the installed mod's metadata.")
             actual = {"gameName": mod.gameName(), "modID": mod.nexusId(),
                       "version": mod.version().canonicalString(),
                       "installationFile": mod.installationFile(),

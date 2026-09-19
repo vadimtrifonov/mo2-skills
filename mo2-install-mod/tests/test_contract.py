@@ -333,10 +333,73 @@ class OperationTests(unittest.TestCase):
         controller.organizer.installMod.side_effect = install
         controller.run(job)
         self.assertEqual(job.native_name, job.name)
-        self.assertEqual(job.status, "refreshing")
+        self.assertEqual(job.status, "verifying")
         self.assertIsNone(job.error)
         returned.name.assert_not_called()
         controller.organizer.onNextRefresh.assert_called_once()
+        self.assertTrue(controller.organizer.onNextRefresh.call_args.args[1])
+        controller.organizer.refresh.assert_not_called()
+        self.assertGreater(job.metadata_deadline, native.time.monotonic())
+
+    def test_metadata_wait_uses_saved_ids_not_qt_cache(self):
+        before = ("[General]\nnotes=100% complete; café\n[Plugins]\nExample\\Choice=one\nExample\\choice=two\n"
+                  "[installedFiles]\n1\\modid=42\n1\\fileid=100\nsize=1\n")
+        saved = before.replace("size=1\n", "2\\modid=42\n2\\fileid=101\nsize=2\n")
+        for outcome in ("saved", "timeout", "storage_error", "malformed"):
+            with self.subTest(outcome=outcome), tempfile.TemporaryDirectory() as folder:
+                job = self.job()
+                job.source = {"modID": 42, "fileID": 101}
+                job.status = "verifying"
+                job.metadata_deadline = 30
+                controller = self.controller(job)
+                controller.organizer.modsPath.return_value = folder
+                controller.refresh = Mock()
+                path = Path(folder) / job.name / "meta.ini"
+                path.parent.mkdir()
+                original = before.replace("size=1", "size=invalid") if outcome == "malformed" else before
+                if outcome != "storage_error":
+                    path.write_text(original, encoding="utf-8-sig")
+                # Qt already exposes the new IDs, but MO2 has not committed them yet.
+                settings = Mock()
+                settings.status.return_value = 0
+                settings.sync.side_effect = lambda: path.write_text(saved, encoding="utf-8-sig")
+                controller.ini = Mock(return_value=settings)
+                controller.associations = Mock(return_value=[[42, 100], [42, 101]])
+                with patch.object(native, "QSettings", SimpleNamespace(Status=SimpleNamespace(NoError=0))), \
+                        patch.object(native.time, "monotonic", return_value=0) as clock, patch.object(native, "QTimer") as timer:
+                    controller.wait_for_metadata(job)
+                    controller.refresh.assert_not_called()
+                    if outcome in {"saved", "timeout"}:
+                        self.assertIs(controller.active, job)
+                        self.assertFalse(controller.pending)
+                        self.assertIsNone(job.error)
+                        self.assertEqual(path.read_text(encoding="utf-8-sig"), before)
+                        delay, callback = timer.singleShot.call_args.args
+                        self.assertGreater(delay, 0)
+                        if outcome == "saved":
+                            path.write_text(saved, encoding="utf-8-sig")
+                        else:
+                            clock.return_value = 30
+                        callback()
+                        self.assertEqual(timer.singleShot.call_count, 1)
+                    else:
+                        timer.singleShot.assert_not_called()
+                controller.ini.assert_not_called()
+                controller.associations.assert_not_called()
+                settings.sync.assert_not_called()
+                if outcome == "saved":
+                    controller.refresh.assert_called_once_with(job, controller.verify)
+                    self.assertIs(controller.active, job)
+                    self.assertFalse(controller.pending)
+                else:
+                    controller.refresh.assert_not_called()
+                    self.assertIsNone(controller.active)
+                    self.assertEqual(job.status, "failed")
+                    self.assertEqual(job.error["code"], "VERIFY_FAILED")
+                if outcome == "storage_error":
+                    self.assertFalse(path.exists())
+                else:
+                    self.assertEqual(path.read_text(encoding="utf-8-sig"), saved if outcome == "saved" else original)
 
     def test_unresolved_error_prevents_success(self):
         job = self.job()
@@ -522,6 +585,7 @@ class OperationTests(unittest.TestCase):
         current = self.job()
         controller = self.controller(current)
         controller.verify(old)
+        controller.wait_for_metadata(old)
         controller.apply_custom_metadata(old)
         controller.organizer.modList.assert_not_called()
         self.assertIs(controller.active, current)

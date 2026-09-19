@@ -1,7 +1,7 @@
 ---
 name: mo2-install-tool
 description: Install and update portable tools used with MO2.
-compatibility: MO2 2.5.2.
+compatibility: MO2 2.5.2, MO2 2.5.3.
 ---
 
 # Install MO2 Tools

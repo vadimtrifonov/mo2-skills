@@ -38,7 +38,7 @@ import time
 import xml.etree.ElementTree as ET
 import zipfile
 
-from integration import Harness, load, payload, save, write_nexus_sidecar
+from integration import Harness, check_metadata, load, payload, save, write_nexus_sidecar
 from sandbox import create
 
 
@@ -383,6 +383,8 @@ def exercise(root, cases):
                 case["installed_metadata"] = result["metadata"]
                 report[case["role"]] = {"steps": len(pages), "options": sum(len(o) for p in pages for o in p["groups"].values()),
                                        "installed_files": len(payload(h.mods / case["name"]))}
+            h.save_metadata(case["name"])
+            check_metadata(root, [case])
         report["custom"] = custom_choices(h)
         saved = {c["name"]: h.control("fomod_saved", name=c["name"])["fomod"] for c in cases}
         save(root / "saved-choices.json", saved)

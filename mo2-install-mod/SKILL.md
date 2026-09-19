@@ -1,7 +1,7 @@
 ---
 name: mo2-install-mod
 description: Install and replace Nexus and custom Skyrim archives in MO2 through Simple Installer, Root Builder, or interactive FOMOD Plus choices.
-compatibility: MO2 2.5.2.
+compatibility: MO2 2.5.2, MO2 2.5.3.
 ---
 
 # Install Mods in MO2
@@ -125,7 +125,7 @@ The client returns JSON with these exit codes:
 | 2 | `needs_input`: answer FOMOD choices, or leave the reported error/dialog to the user. |
 | 3 | Installation is ongoing or completion is unknown. |
 
-`complete` confirms the installed game, version, and archive association after refresh.
+`complete` confirms the installed game, version, and archive association after metadata is saved and reloaded.
 Versions use MO2's canonical formatting; for example, `1.0.0` is reported as `1.0.0.0`.
 Nexus installations also verify the upload association and download Installed flag; custom mods are recorded without Nexus identities or upload associations.
 New mods are installed disabled; activation is separate.

@@ -1,6 +1,7 @@
 ---
 name: mo2-run
 description: Run a configured executable through a Mod Organizer 2 profile. Use when a process must run inside MO2's virtual filesystem, including Skyrim launched in a SteamVR session.
+compatibility: MO2 2.5.2, MO2 2.5.3.
 ---
 
 # MO2 Run

@@ -171,6 +171,18 @@ class Harness:
             time.sleep(0.1)
         raise RuntimeError(f"Test probe did not respond to {command}.")
 
+    def save_metadata(self, name):
+        # Exercise the cached mod before another installation or refresh can reload it.
+        path = self.root / "mods" / name / "meta.ini"
+        previous = path.stat().st_mtime_ns
+        self.control("touch_metadata", name=name)
+        deadline = time.monotonic() + 15
+        while time.monotonic() < deadline:
+            if path.stat().st_mtime_ns != previous:
+                return
+            time.sleep(0.1)
+        raise RuntimeError(f"MO2 did not save metadata for {name}.")
+
     @contextmanager
     def session(self):
         executable = str((self.root / "ModOrganizer.exe").resolve()).replace("'", "''")
@@ -257,6 +269,8 @@ def exercise(root, cases):
             result = harness.install(case, expected="complete")
             assert payload(root / "mods" / case["name"]) == case["expected"], case["name"]
             assert result["installer"] == ("root-builder" if case["layout"] in {"root", "skse"} else "simple"), result
+            harness.save_metadata(case["name"])
+            check_metadata(root, [case])
         created = harness.control("snapshot")["mods"]
         assert all(not mod["active"] for mod in created), created
         check_metadata(root, cases, created)
@@ -292,6 +306,8 @@ def exercise(root, cases):
             assert payload(root / "mods" / (case["name"] + "_backup")) == old_payload
             case.update(update)
             case.pop("update", None)
+            harness.save_metadata(case["name"])
+            check_metadata(root, [case])
         target = cases[0]
         before = payload(root / "mods" / target["name"])
         harness.control("control", hold=True)

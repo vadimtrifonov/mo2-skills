@@ -1,7 +1,7 @@
 ---
 name: mo2-install-plugin
 description: Install and update native DLL and Python plugins loaded by MO2 itself.
-compatibility: MO2 2.5.2.
+compatibility: MO2 2.5.2, MO2 2.5.3.
 ---
 
 # Install MO2 Plugins

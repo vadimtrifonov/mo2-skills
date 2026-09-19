@@ -22,7 +22,7 @@ Mod activation, load-order changes, and Root Builder deployment into the game di
 
 ## Requirements
 
-- Windows and MO2 2.5.2 with its bundled Python support and Qt 6.7.1.
+- Windows and MO2 2.5.2 or 2.5.3 with its bundled Python support.
 - [mise](https://mise.jdx.dev/) for the external client and test drivers.
 - Root Builder with its installer enabled for game-root packages (tested with 5.1.1).
 - FOMOD Plus enabled for XML FOMOD archives (tested with 1.20.0).
