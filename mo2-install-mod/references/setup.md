@@ -2,11 +2,10 @@
 
 ## Command-line Python
 
-From this skill's directory, trust its mise configuration and install the selected Python:
+From this skill's directory, trust its mise configuration:
 
 ```powershell
 mise trust mise.toml
-mise install python
 ```
 
 The client and test drivers use mise-managed Python; MO2 loads plugins with its own bundled Python.
