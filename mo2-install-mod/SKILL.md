@@ -109,7 +109,6 @@ mise exec -- python -B $client --instance $base install $archive --custom --prof
 
 Replacement removes the previous package's files from the shared mod directory, affecting every profile using that mod.
 MO2's backup preference applies.
-Configuration customizations to Nexus packages belong in separate, higher-priority MO2 mods; do not preserve or restore edited Nexus package files.
 
 Simple Installer handles Data layouts.
 Root Builder places game-root files under `<mods>/<name>/Root/`, while Data contents such as `Scripts/` or `SKSE/` remain outside `Root/`.
